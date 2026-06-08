@@ -1,16 +1,5 @@
 import { useState, useRef, useCallback } from "react";
 
-/**
- * useSpeech
- * Provides:
- *   - startListening()  → starts microphone STT
- *   - stopListening()   → stops mic, resolves with final transcript
- *   - speak(text)       → TTS using browser SpeechSynthesis
- *   - isListening       → boolean
- *   - isSpeaking        → boolean
- *   - transcript        → live partial transcript
- *   - error             → string | null
- */
 export function useSpeech() {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking,  setIsSpeaking]  = useState(false);
@@ -25,9 +14,60 @@ export function useSpeech() {
     typeof window !== "undefined" &&
     ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
 
+  const speak = useCallback((text) => {
+    return new Promise((resolve) => {
+      if (!window.speechSynthesis) { resolve(); return; }
+
+      window.speechSynthesis.cancel();
+
+      setTimeout(() => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate   = 0.9;
+        utterance.pitch  = 1.0;
+        utterance.volume = 1.0;
+        utterance.lang   = "en-US";
+
+        // Pick Rishi, fallback to any English voice
+        const voices = window.speechSynthesis.getVoices();
+        const voice  = voices.find((v) => v.name === "Rishi")
+                    || voices.find((v) => v.lang?.startsWith("en-"))
+                    || voices[0];
+        if (voice) utterance.voice = voice;
+
+        let resolved = false;
+        const done = () => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timeout);
+          setIsSpeaking(false);
+          resolve();
+        };
+
+        // Fallback timeout — estimate ~100ms per word, min 3s, max 25s
+        const wordCount = text.split(" ").length;
+        const ms = Math.min(Math.max(wordCount * 100 + 1000, 3000), 25000);
+        const timeout = setTimeout(() => {
+          window.speechSynthesis.cancel();
+          done();
+        }, ms);
+
+        utterance.onstart = () => setIsSpeaking(true);
+        utterance.onend   = done;
+        utterance.onerror = done; // never block on error
+
+        window.speechSynthesis.speak(utterance);
+      }, 150);
+    });
+  }, []);
+
+  const cancelSpeech = useCallback(() => {
+    window.speechSynthesis?.cancel();
+    setIsSpeaking(false);
+  }, []);
+
   const startListening = useCallback(() => {
     if (!isSupported) {
-      setError("Speech recognition not supported in this browser. Use Chrome.");
+      setError("Speech recognition not supported. Please use Chrome.");
       return Promise.reject("unsupported");
     }
 
@@ -38,7 +78,7 @@ export function useSpeech() {
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
 
-    const recognition = new SpeechRecognition();
+    const recognition          = new SpeechRecognition();
     recognition.continuous     = true;
     recognition.interimResults = true;
     recognition.lang           = "en-US";
@@ -57,7 +97,7 @@ export function useSpeech() {
     };
 
     recognition.onerror = (e) => {
-      setError(`Microphone error: ${e.error}`);
+      if (e.error !== "aborted") setError(`Mic error: ${e.error}`);
       setIsListening(false);
     };
 
@@ -78,46 +118,11 @@ export function useSpeech() {
   }, [isSupported]);
 
   const stopListening = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-    }
-  }, []);
-
-  const speak = useCallback((text) => {
-    return new Promise((resolve) => {
-      if (!window.speechSynthesis) { resolve(); return; }
-
-      // Cancel any ongoing speech
-      window.speechSynthesis.cancel();
-
-      const utterance   = new SpeechSynthesisUtterance(text);
-      utterance.rate    = 0.95;
-      utterance.pitch   = 1;
-      utterance.volume  = 1;
-
-      // Prefer a natural English voice
-      const voices = window.speechSynthesis.getVoices();
-      const preferred = voices.find(
-        (v) => v.lang === "en-US" && v.name.toLowerCase().includes("natural")
-      ) || voices.find((v) => v.lang === "en-US") || voices[0];
-      if (preferred) utterance.voice = preferred;
-
-      utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend   = () => { setIsSpeaking(false); resolve(); };
-      utterance.onerror = () => { setIsSpeaking(false); resolve(); };
-
-      window.speechSynthesis.speak(utterance);
-    });
-  }, []);
-
-  const cancelSpeech = useCallback(() => {
-    window.speechSynthesis?.cancel();
-    setIsSpeaking(false);
+    recognitionRef.current?.stop();
   }, []);
 
   return {
-    isListening, isSpeaking, transcript, error,
-    isSupported,
+    isListening, isSpeaking, transcript, error, isSupported,
     startListening, stopListening,
     speak, cancelSpeech,
   };

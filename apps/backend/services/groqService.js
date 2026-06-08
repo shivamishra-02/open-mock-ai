@@ -4,8 +4,37 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const MODEL = "llama-3.3-70b-versatile";
 
 /**
+ * Generate a short interviewer intro based on resume.
+ */
+async function generateIntro(resumeText) {
+  const chat = await groq.chat.completions.create({
+    model: MODEL,
+    messages: [
+      {
+        role: "system",
+        content: `You are a warm but professional technical interviewer starting a mock interview session.
+Generate a short spoken intro (3-4 sentences max) that:
+1. Greets the candidate warmly (don't use their name, just say "Welcome")
+2. Mentions you've reviewed their resume
+3. Sets expectations ("I'll ask a few technical and experience-based questions")
+4. Ends with asking them to briefly introduce themselves
+
+Keep it natural, conversational, and encouraging. Return ONLY the spoken text, nothing else.`,
+      },
+      {
+        role: "user",
+        content: `Resume:\n${resumeText}`,
+      },
+    ],
+    temperature: 0.7,
+    max_tokens: 200,
+  });
+
+  return chat.choices[0].message.content.trim();
+}
+
+/**
  * Generate opening interview questions from resume text.
- * Returns an array of question strings.
  */
 async function generateOpeningQuestions(resumeText, count = 3) {
   const chat = await groq.chat.completions.create({
@@ -13,7 +42,7 @@ async function generateOpeningQuestions(resumeText, count = 3) {
     messages: [
       {
         role: "system",
-        content: `You are a sharp, senior technical interviewer. 
+        content: `You are a sharp, senior technical interviewer.
 Analyse the resume and generate exactly ${count} interview questions.
 Rules:
 - Mix technical depth questions with experience-based questions
@@ -35,7 +64,6 @@ Example: ["Tell me about...", "How did you...", "Walk me through..."]`,
   try {
     return JSON.parse(raw);
   } catch {
-    // fallback: extract lines
     return raw.split("\n").filter(Boolean).slice(0, count);
   }
 }
@@ -73,7 +101,6 @@ Based on what the candidate just said, ask ONE sharp follow-up question.
 
 /**
  * Generate full feedback report from complete interview transcript.
- * Returns a structured JSON feedback object.
  */
 async function generateFeedbackReport(resumeText, transcript) {
   const transcriptText = transcript
@@ -136,6 +163,7 @@ Analyse the full interview and respond ONLY with a valid JSON object (no markdow
 }
 
 module.exports = {
+  generateIntro,
   generateOpeningQuestions,
   generateFollowUp,
   generateFeedbackReport,

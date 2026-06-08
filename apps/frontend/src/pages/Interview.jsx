@@ -1,322 +1,429 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { Mic, MicOff, Square, Volume2, ChevronRight, Clock } from "lucide-react";
+import { Mic, MicOff, Square, Volume2, CheckCircle, Clock, ChevronRight } from "lucide-react";
 import { useSpeech } from "@/hooks/useSpeech.js";
 import { useTimer }  from "@/hooks/useTimer.js";
 import { getNextQuestion, getFeedbackReport } from "@/lib/api.js";
 
-const PHASES = {
-  INTRO:      "intro",       // 3-2-1 countdown before start
-  ASKING:     "asking",      // AI is speaking the question (TTS)
-  LISTENING:  "listening",   // mic is hot, candidate answers
-  PROCESSING: "processing",  // waiting for next question from API
-  DONE:       "done",        // interview over, generating report
+// ─── Phase machine ────────────────────────────────────────────────────────────
+const PHASE = {
+  COUNTDOWN:   "countdown",    // 3-2-1 before anything
+  INTRO:       "intro",        // AI speaking the welcome intro
+  ASKING:      "asking",       // AI speaking the question (TTS)
+  IDLE:        "idle",         // Question shown, waiting for user to press "Start Answer"
+  RECORDING:   "recording",    // User is speaking their answer
+  PROCESSING:  "processing",   // Fetching next question from API
+  DONE:        "done",         // Time up or user ended — generating report
 };
+
+// Animated waveform bar
+const WaveBar = ({ delay, active }) => (
+  <div
+    className="w-1.5 rounded-full bg-rose-400"
+    style={{
+      height: "32px",
+      animation: active ? `wave 1s ease-in-out ${delay}s infinite` : "none",
+      transform: active ? undefined : "scaleY(0.3)",
+      transition: "transform 0.2s",
+    }}
+  />
+);
 
 export default function Interview() {
   const navigate = useNavigate();
 
-  // Session data
-  const resumeText   = sessionStorage.getItem("resumeText") || "";
+  // ── Session data ────────────────────────────────────────────────────────────
+  const resumeText    = sessionStorage.getItem("resumeText") || "";
   const initQuestions = JSON.parse(sessionStorage.getItem("questions") || "[]");
-  const duration     = parseInt(sessionStorage.getItem("duration") || "600", 10);
+  const introText     = sessionStorage.getItem("intro") || "Welcome! I've reviewed your resume. Let's get started — please introduce yourself briefly.";
+  const duration      = parseInt(sessionStorage.getItem("duration") || "600", 10);
 
-  const [phase,           setPhase]         = useState(PHASES.INTRO);
+  // ── State ───────────────────────────────────────────────────────────────────
+  const [phase,           setPhase]         = useState(PHASE.COUNTDOWN);
   const [countdown,       setCountdown]     = useState(3);
   const [currentQuestion, setCurrentQuestion] = useState("");
-  const [transcript,      setTranscript]    = useState("");
-  const [history,         setHistory]       = useState([]);   // [{question, answer}]
-  const [questionIndex,   setQuestionIndex] = useState(0);
-  const [statusMsg,       setStatusMsg]     = useState("");
+  const [liveTranscript,  setLiveTranscript] = useState("");
+  const [history,         setHistory]        = useState([]);
+  const [questionIndex,   setQuestionIndex]  = useState(0);
   const [generatingReport, setGeneratingReport] = useState(false);
+  const [currentAnswer,   setCurrentAnswer]  = useState(""); // answer being built
 
-  const speech = useSpeech();
-  const timer  = useTimer(duration);
+  const speech        = useSpeech();
+  const timer         = useTimer(duration);
   const questionQueue = useRef([...initQuestions]);
+  const historyRef    = useRef([]);   // always-current copy for async callbacks
 
-  // ── Guard: redirect if no session data ──────────────────────────────────
+  // ── Guard ───────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!resumeText || initQuestions.length === 0) navigate("/");
   }, []);
 
-  // ── 3-2-1 Countdown ─────────────────────────────────────────────────────
+  // ── Sync historyRef with history state ──────────────────────────────────────
+  useEffect(() => { historyRef.current = history; }, [history]);
+
+  // ── Timer expiry → end interview ────────────────────────────────────────────
   useEffect(() => {
-    if (phase !== PHASES.INTRO) return;
+    if (timer.isDone && phase !== PHASE.DONE) {
+      speech.cancelSpeech();
+      speech.stopListening();
+      finishInterview(historyRef.current);
+    }
+  }, [timer.isDone]);
+
+  // ── 3-2-1 Countdown ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (phase !== PHASE.COUNTDOWN) return;
     const t = setInterval(() => {
       setCountdown((c) => {
-        if (c <= 1) {
-          clearInterval(t);
-          startInterview();
-          return 0;
-        }
+        if (c <= 1) { clearInterval(t); beginInterview(); return 0; }
         return c - 1;
       });
     }, 1000);
     return () => clearInterval(t);
   }, [phase]);
 
-  // ── Timer ran out → end interview ────────────────────────────────────────
-  useEffect(() => {
-    if (timer.isDone && phase !== PHASES.DONE) endInterview();
-  }, [timer.isDone]);
+  // ─── Core flow ───────────────────────────────────────────────────────────────
 
-  // ── Core flow ─────────────────────────────────────────────────────────────
-  const startInterview = useCallback(async () => {
+  const beginInterview = useCallback(async () => {
+    // Warm up voices so first speak() call works immediately
+    window.speechSynthesis.getVoices();
+    await new Promise(r => setTimeout(r, 300));
     timer.start();
+    setPhase(PHASE.INTRO);
+    await speech.speak(introText);
+    // After intro → first question
     const firstQ = questionQueue.current.shift() || "Tell me about yourself.";
     await askQuestion(firstQ);
-  }, []);
+  }, [introText]);
 
   const askQuestion = useCallback(async (question) => {
-    setPhase(PHASES.ASKING);
+    setPhase(PHASE.ASKING);
     setCurrentQuestion(question);
     setQuestionIndex((i) => i + 1);
-    setTranscript("");
-
+    setLiveTranscript("");
+    setCurrentAnswer("");
     await speech.speak(question);
-    setPhase(PHASES.LISTENING);
-    setStatusMsg("Listening… speak your answer");
+    // After TTS done → idle, waiting for user to start recording
+    setPhase(PHASE.IDLE);
+  }, []);
 
-    const answer = await speech.startListening();
-    await handleAnswer(answer, question);
-  }, [history, resumeText]);
+  // User presses "Start Answer"
+  const startRecording = useCallback(async () => {
+    setPhase(PHASE.RECORDING);
+    setLiveTranscript("");
+    setCurrentAnswer("");
 
-  const handleAnswer = useCallback(async (answer, question) => {
-    const trimmed = answer?.trim() || "(no answer)";
-    const newHistory = [...history, { question, answer: trimmed }];
+    const promise = speech.startListening();
+
+    // Store final answer when STT resolves
+    promise.then((finalAnswer) => {
+      setCurrentAnswer(finalAnswer);
+    });
+  }, [speech]);
+
+  // User presses "Stop Recording" — submit answer
+  const stopRecording = useCallback(async () => {
+    speech.stopListening();
+    // Give STT a moment to finalise
+    await new Promise((r) => setTimeout(r, 400));
+
+    const answer = currentAnswer || speech.transcript || "(no answer recorded)";
+    await submitAnswer(answer);
+  }, [currentAnswer, speech]);
+
+  const submitAnswer = useCallback(async (answer) => {
+    const newHistory = [...historyRef.current, { question: currentQuestion, answer }];
     setHistory(newHistory);
+    historyRef.current = newHistory;
+    setLiveTranscript("");
 
-    if (timer.isDone) { endInterview(newHistory); return; }
+    if (timer.isDone) { finishInterview(newHistory); return; }
 
-    setPhase(PHASES.PROCESSING);
-    setStatusMsg("Thinking of a follow-up…");
+    setPhase(PHASE.PROCESSING);
 
     try {
       const { nextQuestion } = await getNextQuestion({
         resumeText,
         history: newHistory,
-        lastAnswer: trimmed,
+        lastAnswer: answer,
       });
       await askQuestion(nextQuestion);
     } catch {
-      // fallback: use queue or generic question
-      const fallback = questionQueue.current.shift() || "Can you walk me through a challenging project you've worked on?";
+      const fallback = questionQueue.current.shift()
+        || "Can you walk me through a challenging project you've worked on?";
       await askQuestion(fallback);
     }
-  }, [history, resumeText, timer.isDone]);
+  }, [currentQuestion, resumeText, timer.isDone]);
 
-  const stopAndAnswer = async () => {
-    speech.stopListening();
-  };
-
-  const endInterview = useCallback(async (finalHistory) => {
-    speech.cancelSpeech();
-    speech.stopListening();
-    timer.pause();
-    setPhase(PHASES.DONE);
+  const finishInterview = useCallback(async (finalHistory) => {
+    setPhase(PHASE.DONE);
     setGeneratingReport(true);
-
-    const h = finalHistory || history;
-
     try {
-      const report = await getFeedbackReport({ resumeText, transcript: h });
-      sessionStorage.setItem("report",   JSON.stringify(report));
-      sessionStorage.setItem("transcript", JSON.stringify(h));
-      navigate("/report");
-    } catch (err) {
-      // Store what we have and navigate anyway
-      sessionStorage.setItem("report", JSON.stringify({ error: "Failed to generate report", overallScore: 0 }));
-      sessionStorage.setItem("transcript", JSON.stringify(h));
-      navigate("/report");
+      const report = await getFeedbackReport({
+        resumeText,
+        transcript: finalHistory,
+      });
+      sessionStorage.setItem("report",     JSON.stringify(report));
+      sessionStorage.setItem("transcript", JSON.stringify(finalHistory));
+    } catch {
+      sessionStorage.setItem("report",     JSON.stringify({ error: true, overallScore: 0 }));
+      sessionStorage.setItem("transcript", JSON.stringify(finalHistory));
     }
-  }, [history, resumeText]);
+    navigate("/report");
+  }, [resumeText]);
 
-  // ── Waveform bars (visual mic indicator) ─────────────────────────────────
-  const WaveBar = ({ delay }) => (
-    <div
-      className="w-1 bg-brand-400 rounded-full animate-wave"
-      style={{
-        height: "28px",
-        animationDelay: `${delay}s`,
-        animationPlayState: speech.isListening ? "running" : "paused",
-      }}
-    />
-  );
-
-  // ── Timer ring ─────────────────────────────────────────────────────────
-  const r = 44;
-  const circumference = 2 * Math.PI * r;
-  const strokeDash = circumference * timer.progress;
+  // ── Timer ring ───────────────────────────────────────────────────────────────
+  const R    = 20;
+  const circ = 2 * Math.PI * R;
   const timerColor = timer.progress > 0.4 ? "#4f6ef7" : timer.progress > 0.2 ? "#f59e0b" : "#f43f5e";
+
+  // ── UI helpers ───────────────────────────────────────────────────────────────
+  const phaseLabel = {
+    [PHASE.INTRO]:      "Interviewer is speaking…",
+    [PHASE.ASKING]:     "Interviewer is asking a question…",
+    [PHASE.IDLE]:       "Press 'Start Answer' when you're ready",
+    [PHASE.RECORDING]:  "Recording your answer…",
+    [PHASE.PROCESSING]: "Getting next question…",
+    [PHASE.DONE]:       "Wrapping up…",
+  }[phase] || "";
 
   return (
     <div className="min-h-screen bg-surface-900 flex flex-col items-center justify-center px-4 relative overflow-hidden">
+      {/* Glow */}
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[700px] h-[350px] bg-brand-500/8 blur-[120px] rounded-full pointer-events-none" />
 
-      {/* ── Countdown intro ── */}
+      {/* ── Countdown overlay ── */}
       <AnimatePresence>
-        {phase === PHASES.INTRO && (
+        {phase === PHASE.COUNTDOWN && (
           <motion.div
-            key="countdown"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 flex flex-col items-center justify-center bg-surface-900/95 z-50"
+            key="cd"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-surface-900"
           >
+            <motion.p className="text-white/40 mb-4 text-lg">Interview starting in</motion.p>
             <motion.div
               key={countdown}
-              initial={{ scale: 1.4, opacity: 0 }}
+              initial={{ scale: 1.5, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.8, opacity: 0 }}
-              className="text-8xl font-bold gradient-text"
+              exit={{ scale: 0.7, opacity: 0 }}
+              className="text-9xl font-bold gradient-text"
             >
               {countdown}
             </motion.div>
-            <p className="text-white/40 mt-4 text-lg">Get ready…</p>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* ── Report generation overlay ── */}
+      {/* ── Generating report overlay ── */}
       <AnimatePresence>
         {generatingReport && (
           <motion.div
-            key="generating"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="absolute inset-0 flex flex-col items-center justify-center bg-surface-900/95 z-50 gap-5"
+            key="gen"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-surface-900/95 gap-5"
           >
             <div className="w-16 h-16 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" />
             <div className="text-center">
               <p className="text-white font-semibold text-xl">Generating your report…</p>
-              <p className="text-white/40 text-sm mt-1">Analysing your performance across all dimensions</p>
+              <p className="text-white/40 text-sm mt-1">Analysing performance across all dimensions</p>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* ── Main interview UI ── */}
-      <div className="w-full max-w-2xl flex flex-col gap-6">
+      {/* ── Main UI ── */}
+      <div className="w-full max-w-2xl flex flex-col gap-5">
 
-        {/* Top bar: question count + timer */}
+        {/* Top bar */}
         <div className="flex items-center justify-between">
           <div className="glass rounded-xl px-4 py-2 text-white/50 text-sm">
-            Question <span className="text-white font-medium">#{questionIndex || "–"}</span>
+            {phase === PHASE.INTRO
+              ? <span className="text-brand-400 font-medium">Introduction</span>
+              : <>Question <span className="text-white font-medium">#{questionIndex}</span></>
+            }
           </div>
 
           {/* Circular timer */}
-          <div className="relative">
-            <svg width="56" height="56" className="-rotate-90">
-              <circle cx="28" cy="28" r={r - 6} fill="none" stroke="#1e1e28" strokeWidth="4"/>
+          <div className="relative w-14 h-14">
+            <svg width="56" height="56" className="-rotate-90" viewBox="0 0 56 56">
+              <circle cx="28" cy="28" r={R} fill="none" stroke="#1e1e28" strokeWidth="5"/>
               <circle
-                cx="28" cy="28" r={r - 6}
-                fill="none"
-                stroke={timerColor}
-                strokeWidth="4"
-                strokeDasharray={`${circumference * 0.8} ${circumference}`}
-                strokeDashoffset={circumference * 0.8 - strokeDash * 0.8}
+                cx="28" cy="28" r={R}
+                fill="none" stroke={timerColor} strokeWidth="5"
+                strokeDasharray={circ}
+                strokeDashoffset={circ * (1 - timer.progress)}
                 strokeLinecap="round"
                 style={{ transition: "stroke-dashoffset 1s linear, stroke 0.5s" }}
               />
             </svg>
-            <span className="absolute inset-0 flex items-center justify-center text-white text-xs font-mono font-medium">
+            <span className="absolute inset-0 flex items-center justify-center text-white text-[10px] font-mono font-semibold">
               {timer.formattedTime}
             </span>
           </div>
 
-          <button onClick={() => endInterview()} className="btn-ghost flex items-center gap-1.5 text-sm text-rose-400 hover:text-rose-300 hover:bg-rose-500/10">
+          <button
+            onClick={() => finishInterview(historyRef.current)}
+            className="btn-ghost flex items-center gap-1.5 text-sm text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
+          >
             <Square size={14} /> End
           </button>
         </div>
 
-        {/* Question display card */}
+        {/* Question / Intro card */}
         <AnimatePresence mode="wait">
           <motion.div
-            key={currentQuestion}
+            key={currentQuestion || "intro"}
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
-            className="glass rounded-2xl p-7 min-h-[120px] flex items-center"
+            className="glass rounded-2xl p-7 min-h-[130px] flex items-start gap-4"
           >
-            <div className="flex gap-4 items-start w-full">
-              <div className="w-9 h-9 rounded-xl bg-brand-500/15 border border-brand-500/25 flex items-center justify-center shrink-0 mt-0.5">
-                <Volume2 className="text-brand-400" size={16} />
-              </div>
-              <div className="flex-1">
-                {phase === PHASES.ASKING && (
-                  <p className="text-white/30 text-xs mb-1.5 font-medium">AI Interviewer</p>
-                )}
-                <p className="text-white text-lg leading-relaxed font-medium">
-                  {currentQuestion || (phase === PHASES.INTRO ? "Preparing your first question…" : "Thinking…")}
-                </p>
-              </div>
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 mt-0.5
+              ${phase === PHASE.ASKING || phase === PHASE.INTRO
+                ? "bg-brand-500/20 border border-brand-500/30 animate-pulse-slow"
+                : "bg-brand-500/10 border border-brand-500/20"
+              }`}
+            >
+              <Volume2 className="text-brand-400" size={18} />
+            </div>
+            <div className="flex-1">
+              <p className="text-white/30 text-xs mb-2 font-medium uppercase tracking-wider">
+                AI Interviewer
+              </p>
+              <p className="text-white text-lg leading-relaxed font-medium">
+                {phase === PHASE.INTRO
+                  ? introText
+                  : currentQuestion || "Preparing…"}
+              </p>
             </div>
           </motion.div>
         </AnimatePresence>
 
-        {/* Answer / Mic UI */}
-        <div className="glass rounded-2xl p-6 flex flex-col items-center gap-5">
+        {/* Status label */}
+        <motion.p
+          key={phaseLabel}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="text-center text-white/40 text-sm h-5"
+        >
+          {phaseLabel}
+        </motion.p>
 
-          {/* Status */}
-          <p className="text-white/40 text-sm text-center h-5">
-            {phase === PHASES.LISTENING   && statusMsg}
-            {phase === PHASES.ASKING      && "AI is asking the question…"}
-            {phase === PHASES.PROCESSING  && statusMsg}
-          </p>
+        {/* Answer recording card */}
+        <div className="glass rounded-2xl p-6 flex flex-col items-center gap-5 min-h-[180px] justify-center">
 
-          {/* Waveform / Mic button */}
-          <div className="flex flex-col items-center gap-4">
-            {phase === PHASES.LISTENING ? (
-              <>
-                {/* Animated waveform */}
-                <div className="flex items-center gap-1 h-12">
-                  {[0, 0.1, 0.2, 0.3, 0.4, 0.3, 0.2, 0.1, 0].map((d, i) => (
-                    <WaveBar key={i} delay={d} />
-                  ))}
-                </div>
-                <button
-                  onClick={stopAndAnswer}
-                  className="w-16 h-16 rounded-full bg-rose-500/90 hover:bg-rose-500 flex items-center justify-center transition-all duration-200 shadow-lg shadow-rose-500/30 animate-glow-pulse"
-                >
-                  <MicOff size={24} className="text-white" />
-                </button>
-                <p className="text-white/30 text-xs">Tap to stop recording</p>
-              </>
-            ) : (
-              <div className="w-16 h-16 rounded-full bg-surface-600/60 border border-white/5 flex items-center justify-center">
-                <Mic size={24} className="text-white/20" />
+          {/* IDLE — waiting for user to start */}
+          {phase === PHASE.IDLE && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="flex flex-col items-center gap-4 w-full"
+            >
+              <div className="w-14 h-14 rounded-full bg-surface-600/50 border border-white/10 flex items-center justify-center">
+                <Mic size={24} className="text-white/30" />
               </div>
-            )}
-          </div>
-
-          {/* Live transcript */}
-          <AnimatePresence>
-            {speech.transcript && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                className="w-full bg-surface-800/80 rounded-xl px-4 py-3 text-white/60 text-sm leading-relaxed border border-white/[0.04]"
+              <button
+                onClick={startRecording}
+                className="btn-primary flex items-center gap-2.5 px-8 py-3.5 text-base"
               >
-                <span className="text-white/25 text-xs mr-2">You:</span>
-                {speech.transcript}
-              </motion.div>
-            )}
-          </AnimatePresence>
+                <Mic size={18} />
+                Start Answer
+              </button>
+              <p className="text-white/25 text-xs">Click when you're ready to speak</p>
+            </motion.div>
+          )}
+
+          {/* RECORDING — live waveform + stop button */}
+          {phase === PHASE.RECORDING && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex flex-col items-center gap-4 w-full"
+            >
+              {/* Waveform */}
+              <div className="flex items-center gap-1 h-10">
+                {[0, 0.1, 0.2, 0.15, 0.05, 0.2, 0.1, 0.25, 0.05].map((d, i) => (
+                  <WaveBar key={i} delay={d} active={true} />
+                ))}
+              </div>
+
+              {/* Live transcript */}
+              <div className="w-full bg-surface-800/80 rounded-xl px-4 py-3 min-h-[52px] border border-white/[0.04]">
+                <p className="text-white/25 text-xs mb-1">Live transcript</p>
+                <p className="text-white/60 text-sm leading-relaxed">
+                  {speech.transcript || <span className="text-white/20 italic">Listening…</span>}
+                </p>
+              </div>
+
+              {/* Stop button */}
+              <button
+                onClick={stopRecording}
+                className="flex items-center gap-2.5 bg-rose-500/90 hover:bg-rose-500 text-white font-medium px-8 py-3.5 rounded-xl transition-all duration-200 shadow-lg shadow-rose-500/25 text-base"
+              >
+                <MicOff size={18} />
+                Stop Recording
+              </button>
+              <p className="text-white/25 text-xs">Click to submit your answer</p>
+            </motion.div>
+          )}
+
+          {/* PROCESSING — spinner */}
+          {phase === PHASE.PROCESSING && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex flex-col items-center gap-3"
+            >
+              <div className="w-10 h-10 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" />
+              <p className="text-white/40 text-sm">Thinking of next question…</p>
+            </motion.div>
+          )}
+
+          {/* ASKING / INTRO — AI speaking indicator */}
+          {(phase === PHASE.ASKING || phase === PHASE.INTRO) && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex flex-col items-center gap-3"
+            >
+              <div className="flex items-center gap-1 h-10">
+                {[0, 0.15, 0.3, 0.15, 0].map((d, i) => (
+                  <div
+                    key={i}
+                    className="w-1.5 rounded-full bg-brand-400"
+                    style={{
+                      height: "28px",
+                      animation: `wave 1.2s ease-in-out ${d}s infinite`,
+                    }}
+                  />
+                ))}
+              </div>
+              <p className="text-white/30 text-sm">AI is speaking…</p>
+            </motion.div>
+          )}
         </div>
 
-        {/* History pills */}
+        {/* Answered questions trail */}
         {history.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-            {history.map((h, i) => (
-              <div key={i} className="shrink-0 glass rounded-lg px-3 py-1.5 text-white/30 text-xs whitespace-nowrap">
-                Q{i + 1} ✓
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {history.map((_, i) => (
+              <div key={i} className="shrink-0 flex items-center gap-1.5 glass rounded-lg px-3 py-1.5">
+                <CheckCircle size={12} className="text-emerald-400" />
+                <span className="text-white/40 text-xs">Q{i + 1}</span>
               </div>
             ))}
           </div>
         )}
       </div>
+
+      {/* Keyframe styles injected inline */}
+      <style>{`
+        @keyframes wave {
+          0%, 100% { transform: scaleY(0.3); }
+          50%       { transform: scaleY(1);   }
+        }
+      `}</style>
     </div>
   );
 }

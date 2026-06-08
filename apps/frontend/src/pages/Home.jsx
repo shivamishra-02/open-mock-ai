@@ -42,10 +42,11 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const { resumeText, questions } = await parseResume(file);
+      const { resumeText, questions, intro } = await parseResume(file);
       // Store in sessionStorage for next pages
       sessionStorage.setItem("resumeText", resumeText);
       sessionStorage.setItem("questions", JSON.stringify(questions));
+      sessionStorage.setItem("intro", intro || "");
       navigate("/setup");
     } catch (err) {
       setError(err.response?.data?.error || "Failed to parse resume. Please try again.");
