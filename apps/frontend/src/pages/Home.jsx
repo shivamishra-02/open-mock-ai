@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload, FileText, Zap, ChevronRight, CheckCircle, AlertCircle } from "lucide-react";
 import { parseResume } from "@/lib/api.js";
+import Footer from "@/components/Footer.jsx";
 
 const FEATURES = [
   { icon: "🎙️", title: "Voice Interview",   desc: "Speak naturally — AI listens & responds" },
@@ -218,6 +219,7 @@ export default function Home() {
       <p className="text-white/20 text-xs mt-8">
         Your resume is processed in-memory · Never stored
       </p>
+      <Footer />
     </div>
   );
 }

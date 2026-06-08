@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { RotateCcw, Download, TrendingUp, CheckCircle, XCircle, Zap } from "lucide-react";
+import Footer from "@/components/Footer.jsx";
 
 const CATEGORY_META = {
   technicalDepth:       { label: "Technical Depth",     icon: "⚡", color: "blue" },
@@ -234,6 +235,7 @@ export default function Report() {
             New Interview
           </motion.button>
         </div>
+        <Footer />
       </div>
     </div>
   );

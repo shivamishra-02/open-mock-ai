@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Clock, ArrowLeft, ChevronRight, Zap, Target, Trophy } from "lucide-react";
+import Footer from "@/components/Footer.jsx";
 
 const DURATIONS = [
   {
@@ -149,6 +150,7 @@ export default function Setup() {
           <ChevronRight size={18} />
         </motion.button>
       </motion.div>
+      <Footer />
     </div>
   );
 }
