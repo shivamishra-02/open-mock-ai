@@ -1,321 +1,239 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
-import { Mic, MicOff, Square, Volume2, ChevronRight, Clock } from "lucide-react";
-import { useSpeech } from "@/hooks/useSpeech.js";
-import { useTimer }  from "@/hooks/useTimer.js";
-import { getNextQuestion, getFeedbackReport } from "@/lib/api.js";
+import { motion } from "framer-motion";
+import { RotateCcw, Download, TrendingUp, CheckCircle, XCircle, Zap } from "lucide-react";
 
-const PHASES = {
-  INTRO:      "intro",       // 3-2-1 countdown before start
-  ASKING:     "asking",      // AI is speaking the question (TTS)
-  LISTENING:  "listening",   // mic is hot, candidate answers
-  PROCESSING: "processing",  // waiting for next question from API
-  DONE:       "done",        // interview over, generating report
+const CATEGORY_META = {
+  technicalDepth:       { label: "Technical Depth",     icon: "⚡", color: "blue" },
+  communicationClarity: { label: "Communication",        icon: "💬", color: "purple" },
+  problemSolving:       { label: "Problem Solving",      icon: "🧠", color: "emerald" },
+  experienceRelevance:  { label: "Experience Relevance", icon: "📌", color: "amber" },
 };
 
-export default function Interview() {
-  const navigate = useNavigate();
+const COLOR_MAP = {
+  blue:    { bar: "bg-blue-500",    text: "text-blue-400",    bg: "bg-blue-500/10",    border: "border-blue-500/20" },
+  purple:  { bar: "bg-purple-500",  text: "text-purple-400",  bg: "bg-purple-500/10",  border: "border-purple-500/20" },
+  emerald: { bar: "bg-emerald-500", text: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20" },
+  amber:   { bar: "bg-amber-500",   text: "text-amber-400",   bg: "bg-amber-500/10",   border: "border-amber-500/20" },
+};
 
-  // Session data
-  const resumeText   = sessionStorage.getItem("resumeText") || "";
-  const initQuestions = JSON.parse(sessionStorage.getItem("questions") || "[]");
-  const duration     = parseInt(sessionStorage.getItem("duration") || "600", 10);
+const VERDICT_META = {
+  "Strong Yes": { color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/30", emoji: "🎉" },
+  "Yes":        { color: "text-blue-400",    bg: "bg-blue-500/10 border-blue-500/30",       emoji: "✅" },
+  "Maybe":      { color: "text-amber-400",   bg: "bg-amber-500/10 border-amber-500/30",     emoji: "🤔" },
+  "No":         { color: "text-rose-400",    bg: "bg-rose-500/10 border-rose-500/30",       emoji: "📚" },
+};
 
-  const [phase,           setPhase]         = useState(PHASES.INTRO);
-  const [countdown,       setCountdown]     = useState(3);
-  const [currentQuestion, setCurrentQuestion] = useState("");
-  const [transcript,      setTranscript]    = useState("");
-  const [history,         setHistory]       = useState([]);   // [{question, answer}]
-  const [questionIndex,   setQuestionIndex] = useState(0);
-  const [statusMsg,       setStatusMsg]     = useState("");
-  const [generatingReport, setGeneratingReport] = useState(false);
-
-  const speech = useSpeech();
-  const timer  = useTimer(duration);
-  const questionQueue = useRef([...initQuestions]);
-
-  // ── Guard: redirect if no session data ──────────────────────────────────
-  useEffect(() => {
-    if (!resumeText || initQuestions.length === 0) navigate("/");
-  }, []);
-
-  // ── 3-2-1 Countdown ─────────────────────────────────────────────────────
-  useEffect(() => {
-    if (phase !== PHASES.INTRO) return;
-    const t = setInterval(() => {
-      setCountdown((c) => {
-        if (c <= 1) {
-          clearInterval(t);
-          startInterview();
-          return 0;
-        }
-        return c - 1;
-      });
-    }, 1000);
-    return () => clearInterval(t);
-  }, [phase]);
-
-  // ── Timer ran out → end interview ────────────────────────────────────────
-  useEffect(() => {
-    if (timer.isDone && phase !== PHASES.DONE) endInterview();
-  }, [timer.isDone]);
-
-  // ── Core flow ─────────────────────────────────────────────────────────────
-  const startInterview = useCallback(async () => {
-    timer.start();
-    const firstQ = questionQueue.current.shift() || "Tell me about yourself.";
-    await askQuestion(firstQ);
-  }, []);
-
-  const askQuestion = useCallback(async (question) => {
-    setPhase(PHASES.ASKING);
-    setCurrentQuestion(question);
-    setQuestionIndex((i) => i + 1);
-    setTranscript("");
-
-    await speech.speak(question);
-    setPhase(PHASES.LISTENING);
-    setStatusMsg("Listening… speak your answer");
-
-    const answer = await speech.startListening();
-    await handleAnswer(answer, question);
-  }, [history, resumeText]);
-
-  const handleAnswer = useCallback(async (answer, question) => {
-    const trimmed = answer?.trim() || "(no answer)";
-    const newHistory = [...history, { question, answer: trimmed }];
-    setHistory(newHistory);
-
-    if (timer.isDone) { endInterview(newHistory); return; }
-
-    setPhase(PHASES.PROCESSING);
-    setStatusMsg("Thinking of a follow-up…");
-
-    try {
-      const { nextQuestion } = await getNextQuestion({
-        resumeText,
-        history: newHistory,
-        lastAnswer: trimmed,
-      });
-      await askQuestion(nextQuestion);
-    } catch {
-      // fallback: use queue or generic question
-      const fallback = questionQueue.current.shift() || "Can you walk me through a challenging project you've worked on?";
-      await askQuestion(fallback);
-    }
-  }, [history, resumeText, timer.isDone]);
-
-  const stopAndAnswer = async () => {
-    speech.stopListening();
-  };
-
-  const endInterview = useCallback(async (finalHistory) => {
-    speech.cancelSpeech();
-    speech.stopListening();
-    timer.pause();
-    setPhase(PHASES.DONE);
-    setGeneratingReport(true);
-
-    const h = finalHistory || history;
-
-    try {
-      const report = await getFeedbackReport({ resumeText, transcript: h });
-      sessionStorage.setItem("report",   JSON.stringify(report));
-      sessionStorage.setItem("transcript", JSON.stringify(h));
-      navigate("/report");
-    } catch (err) {
-      // Store what we have and navigate anyway
-      sessionStorage.setItem("report", JSON.stringify({ error: "Failed to generate report", overallScore: 0 }));
-      sessionStorage.setItem("transcript", JSON.stringify(h));
-      navigate("/report");
-    }
-  }, [history, resumeText]);
-
-  // ── Waveform bars (visual mic indicator) ─────────────────────────────────
-  const WaveBar = ({ delay }) => (
-    <div
-      className="w-1 bg-brand-400 rounded-full animate-wave"
-      style={{
-        height: "28px",
-        animationDelay: `${delay}s`,
-        animationPlayState: speech.isListening ? "running" : "paused",
-      }}
-    />
-  );
-
-  // ── Timer ring ─────────────────────────────────────────────────────────
-  const r = 44;
-  const circumference = 2 * Math.PI * r;
-  const strokeDash = circumference * timer.progress;
-  const timerColor = timer.progress > 0.4 ? "#4f6ef7" : timer.progress > 0.2 ? "#f59e0b" : "#f43f5e";
+function ScoreRing({ score, size = 120 }) {
+  const r = size / 2 - 10;
+  const circ = 2 * Math.PI * r;
+  const color = score >= 85 ? "#10b981" : score >= 70 ? "#4f6ef7" : score >= 50 ? "#f59e0b" : "#f43f5e";
 
   return (
-    <div className="min-h-screen bg-surface-900 flex flex-col items-center justify-center px-4 relative overflow-hidden">
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[700px] h-[350px] bg-brand-500/8 blur-[120px] rounded-full pointer-events-none" />
+    <div className="relative" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#1e1e28" strokeWidth="8"/>
+        <motion.circle
+          cx={size/2} cy={size/2} r={r}
+          fill="none" stroke={color} strokeWidth="8"
+          strokeDasharray={circ}
+          initial={{ strokeDashoffset: circ }}
+          animate={{ strokeDashoffset: circ - (circ * score) / 100 }}
+          transition={{ duration: 1.4, ease: "easeOut" }}
+          strokeLinecap="round"
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <motion.span
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.5 }}
+          className="text-white font-bold"
+          style={{ fontSize: size * 0.22 }}
+        >
+          {score}
+        </motion.span>
+        <span className="text-white/30 text-xs">/100</span>
+      </div>
+    </div>
+  );
+}
 
-      {/* ── Countdown intro ── */}
-      <AnimatePresence>
-        {phase === PHASES.INTRO && (
-          <motion.div
-            key="countdown"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 flex flex-col items-center justify-center bg-surface-900/95 z-50"
-          >
-            <motion.div
-              key={countdown}
-              initial={{ scale: 1.4, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.8, opacity: 0 }}
-              className="text-8xl font-bold gradient-text"
-            >
-              {countdown}
-            </motion.div>
-            <p className="text-white/40 mt-4 text-lg">Get ready…</p>
-          </motion.div>
-        )}
-      </AnimatePresence>
+function CategoryCard({ catKey, data, index }) {
+  const meta   = CATEGORY_META[catKey];
+  const colors = COLOR_MAP[meta.color];
 
-      {/* ── Report generation overlay ── */}
-      <AnimatePresence>
-        {generatingReport && (
-          <motion.div
-            key="generating"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="absolute inset-0 flex flex-col items-center justify-center bg-surface-900/95 z-50 gap-5"
-          >
-            <div className="w-16 h-16 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" />
-            <div className="text-center">
-              <p className="text-white font-semibold text-xl">Generating your report…</p>
-              <p className="text-white/40 text-sm mt-1">Analysing your performance across all dimensions</p>
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.1 * index }}
+      className={`glass rounded-2xl p-5 border ${colors.border}`}
+    >
+      <div className="flex items-start justify-between mb-4">
+        <div className="flex items-center gap-2.5">
+          <div className={`text-xl w-9 h-9 rounded-xl ${colors.bg} flex items-center justify-center`}>
+            {meta.icon}
+          </div>
+          <div>
+            <p className="text-white font-medium text-sm">{meta.label}</p>
+            <p className={`text-xs font-medium ${colors.text}`}>{data.label}</p>
+          </div>
+        </div>
+        <span className={`text-2xl font-bold ${colors.text}`}>{data.score}</span>
+      </div>
+
+      {/* Score bar */}
+      <div className="h-1.5 bg-surface-600 rounded-full mb-4 overflow-hidden">
+        <motion.div
+          className={`h-full ${colors.bar} rounded-full`}
+          initial={{ width: 0 }}
+          animate={{ width: `${data.score}%` }}
+          transition={{ duration: 1, ease: "easeOut", delay: 0.2 * index }}
+        />
+      </div>
+
+      <p className="text-white/50 text-xs leading-relaxed mb-3">{data.feedback}</p>
+
+      {data.highlights?.length > 0 && (
+        <ul className="space-y-1.5">
+          {data.highlights.map((h, i) => (
+            <li key={i} className="flex items-start gap-2 text-xs text-white/40">
+              <span className={`${colors.text} mt-0.5`}>→</span>
+              {h}
+            </li>
+          ))}
+        </ul>
+      )}
+    </motion.div>
+  );
+}
+
+export default function Report() {
+  const navigate  = useNavigate();
+  const [report,  setReport]  = useState(null);
+  const [transcript, setTranscript] = useState([]);
+  const [showTranscript, setShowTranscript] = useState(false);
+
+  useEffect(() => {
+    const r = sessionStorage.getItem("report");
+    const t = sessionStorage.getItem("transcript");
+    if (!r) { navigate("/"); return; }
+    setReport(JSON.parse(r));
+    setTranscript(JSON.parse(t || "[]"));
+  }, []);
+
+  if (!report) return null;
+
+  const verdict = VERDICT_META[report.hiringVerdict] || VERDICT_META["Maybe"];
+
+  return (
+    <div className="min-h-screen bg-surface-900 px-4 py-12 relative overflow-hidden">
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[700px] h-[300px] bg-brand-500/8 blur-[120px] rounded-full pointer-events-none" />
+
+      <div className="max-w-3xl mx-auto">
+
+        {/* Header */}
+        <motion.div initial={{ opacity: 0, y: -16 }} animate={{ opacity: 1, y: 0 }} className="text-center mb-10">
+          <div className="inline-flex items-center gap-2 bg-brand-500/10 border border-brand-500/20 text-brand-400 text-xs font-medium px-3 py-1.5 rounded-full mb-5">
+            <Zap size={12} /> Interview Complete
+          </div>
+          <h1 className="text-4xl font-bold text-white mb-2">Your Performance Report</h1>
+          <p className="text-white/40">Here's how you did across all interview dimensions</p>
+        </motion.div>
+
+        {/* Overall score + verdict */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="glass rounded-2xl p-8 mb-6 flex flex-col md:flex-row items-center gap-8"
+        >
+          <ScoreRing score={report.overallScore || 0} size={140} />
+          <div className="flex-1 text-center md:text-left">
+            <p className="text-white/40 text-sm mb-2">Overall Score</p>
+            <h2 className="text-white text-2xl font-bold mb-3">{report.summary}</h2>
+            <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-medium ${verdict.bg} ${verdict.color}`}>
+              {verdict.emoji} Hiring Verdict: {report.hiringVerdict}
             </div>
+          </div>
+        </motion.div>
+
+        {/* Category cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          {Object.entries(report.categories || {}).map(([key, data], i) => (
+            <CategoryCard key={key} catKey={key} data={data} index={i} />
+          ))}
+        </div>
+
+        {/* Strengths & Improvements */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }} className="glass rounded-2xl p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <CheckCircle className="text-emerald-400" size={18} />
+              <h3 className="text-white font-semibold">Strengths</h3>
+            </div>
+            <ul className="space-y-2.5">
+              {(report.strengths || []).map((s, i) => (
+                <li key={i} className="flex items-start gap-2.5 text-sm text-white/60">
+                  <span className="text-emerald-400 text-xs mt-1">✓</span>
+                  {s}
+                </li>
+              ))}
+            </ul>
           </motion.div>
-        )}
-      </AnimatePresence>
 
-      {/* ── Main interview UI ── */}
-      <div className="w-full max-w-2xl flex flex-col gap-6">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 }} className="glass rounded-2xl p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <TrendingUp className="text-amber-400" size={18} />
+              <h3 className="text-white font-semibold">Areas to Improve</h3>
+            </div>
+            <ul className="space-y-2.5">
+              {(report.improvements || []).map((s, i) => (
+                <li key={i} className="flex items-start gap-2.5 text-sm text-white/60">
+                  <span className="text-amber-400 text-xs mt-1">→</span>
+                  {s}
+                </li>
+              ))}
+            </ul>
+          </motion.div>
+        </div>
 
-        {/* Top bar: question count + timer */}
-        <div className="flex items-center justify-between">
-          <div className="glass rounded-xl px-4 py-2 text-white/50 text-sm">
-            Question <span className="text-white font-medium">#{questionIndex || "–"}</span>
-          </div>
-
-          {/* Circular timer */}
-          <div className="relative">
-            <svg width="56" height="56" className="-rotate-90">
-              <circle cx="28" cy="28" r={r - 6} fill="none" stroke="#1e1e28" strokeWidth="4"/>
-              <circle
-                cx="28" cy="28" r={r - 6}
-                fill="none"
-                stroke={timerColor}
-                strokeWidth="4"
-                strokeDasharray={`${circumference * 0.8} ${circumference}`}
-                strokeDashoffset={circumference * 0.8 - strokeDash * 0.8}
-                strokeLinecap="round"
-                style={{ transition: "stroke-dashoffset 1s linear, stroke 0.5s" }}
-              />
-            </svg>
-            <span className="absolute inset-0 flex items-center justify-center text-white text-xs font-mono font-medium">
-              {timer.formattedTime}
-            </span>
-          </div>
-
-          <button onClick={() => endInterview()} className="btn-ghost flex items-center gap-1.5 text-sm text-rose-400 hover:text-rose-300 hover:bg-rose-500/10">
-            <Square size={14} /> End
+        {/* Transcript toggle */}
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.7 }} className="glass rounded-2xl overflow-hidden mb-8">
+          <button
+            onClick={() => setShowTranscript(!showTranscript)}
+            className="w-full flex items-center justify-between p-5 hover:bg-white/[0.02] transition-colors"
+          >
+            <span className="text-white font-medium">View Full Transcript</span>
+            <span className="text-white/30 text-sm">{showTranscript ? "Hide" : `${transcript.length} exchanges`}</span>
           </button>
-        </div>
-
-        {/* Question display card */}
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={currentQuestion}
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            className="glass rounded-2xl p-7 min-h-[120px] flex items-center"
-          >
-            <div className="flex gap-4 items-start w-full">
-              <div className="w-9 h-9 rounded-xl bg-brand-500/15 border border-brand-500/25 flex items-center justify-center shrink-0 mt-0.5">
-                <Volume2 className="text-brand-400" size={16} />
-              </div>
-              <div className="flex-1">
-                {phase === PHASES.ASKING && (
-                  <p className="text-white/30 text-xs mb-1.5 font-medium">AI Interviewer</p>
-                )}
-                <p className="text-white text-lg leading-relaxed font-medium">
-                  {currentQuestion || (phase === PHASES.INTRO ? "Preparing your first question…" : "Thinking…")}
-                </p>
-              </div>
-            </div>
-          </motion.div>
-        </AnimatePresence>
-
-        {/* Answer / Mic UI */}
-        <div className="glass rounded-2xl p-6 flex flex-col items-center gap-5">
-
-          {/* Status */}
-          <p className="text-white/40 text-sm text-center h-5">
-            {phase === PHASES.LISTENING   && statusMsg}
-            {phase === PHASES.ASKING      && "AI is asking the question…"}
-            {phase === PHASES.PROCESSING  && statusMsg}
-          </p>
-
-          {/* Waveform / Mic button */}
-          <div className="flex flex-col items-center gap-4">
-            {phase === PHASES.LISTENING ? (
-              <>
-                {/* Animated waveform */}
-                <div className="flex items-center gap-1 h-12">
-                  {[0, 0.1, 0.2, 0.3, 0.4, 0.3, 0.2, 0.1, 0].map((d, i) => (
-                    <WaveBar key={i} delay={d} />
-                  ))}
+          {showTranscript && (
+            <div className="px-5 pb-5 space-y-4 border-t border-white/[0.05]">
+              {transcript.map((t, i) => (
+                <div key={i} className="pt-4">
+                  <p className="text-brand-400 text-xs font-medium mb-1.5">Q{i+1}: {t.question}</p>
+                  <p className="text-white/50 text-sm leading-relaxed pl-3 border-l border-white/10">{t.answer}</p>
                 </div>
-                <button
-                  onClick={stopAndAnswer}
-                  className="w-16 h-16 rounded-full bg-rose-500/90 hover:bg-rose-500 flex items-center justify-center transition-all duration-200 shadow-lg shadow-rose-500/30 animate-glow-pulse"
-                >
-                  <MicOff size={24} className="text-white" />
-                </button>
-                <p className="text-white/30 text-xs">Tap to stop recording</p>
-              </>
-            ) : (
-              <div className="w-16 h-16 rounded-full bg-surface-600/60 border border-white/5 flex items-center justify-center">
-                <Mic size={24} className="text-white/20" />
-              </div>
-            )}
-          </div>
+              ))}
+            </div>
+          )}
+        </motion.div>
 
-          {/* Live transcript */}
-          <AnimatePresence>
-            {speech.transcript && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                className="w-full bg-surface-800/80 rounded-xl px-4 py-3 text-white/60 text-sm leading-relaxed border border-white/[0.04]"
-              >
-                <span className="text-white/25 text-xs mr-2">You:</span>
-                {speech.transcript}
-              </motion.div>
-            )}
-          </AnimatePresence>
+        {/* Actions */}
+        <div className="flex gap-3">
+          <motion.button
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.8 }}
+            onClick={() => {
+              sessionStorage.clear();
+              navigate("/");
+            }}
+            className="btn-primary flex-1 flex items-center justify-center gap-2"
+          >
+            <RotateCcw size={16} />
+            New Interview
+          </motion.button>
         </div>
-
-        {/* History pills */}
-        {history.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-            {history.map((h, i) => (
-              <div key={i} className="shrink-0 glass rounded-lg px-3 py-1.5 text-white/30 text-xs whitespace-nowrap">
-                Q{i + 1} ✓
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );
