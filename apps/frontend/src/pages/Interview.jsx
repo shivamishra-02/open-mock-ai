@@ -98,15 +98,20 @@ export default function Interview() {
   }, [introText]);
 
   const askQuestion = useCallback(async (question) => {
+    // Set state first, then speak — never overlap TTS calls
     setPhase(PHASE.ASKING);
     setCurrentQuestion(question);
     setQuestionIndex((i) => i + 1);
-    setLiveTranscript("");
     setCurrentAnswer("");
+
+    // Small pause so React re-renders the question card before TTS starts
+    await new Promise(r => setTimeout(r, 100));
+
     await speech.speak(question);
-    // After TTS done → idle, waiting for user to start recording
+
+    // Only move to IDLE after TTS fully completes
     setPhase(PHASE.IDLE);
-  }, []);
+  }, [speech]);
 
   // User presses "Start Answer"
   const startRecording = useCallback(async () => {

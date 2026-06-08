@@ -9,6 +9,7 @@ export function useSpeech() {
   const recognitionRef = useRef(null);
   const resolveRef     = useRef(null);
   const finalRef       = useRef("");
+  const speakingRef    = useRef(false); // tracks if TTS is currently active
 
   const isSupported =
     typeof window !== "undefined" &&
@@ -18,11 +19,16 @@ export function useSpeech() {
     return new Promise((resolve) => {
       if (!window.speechSynthesis) { resolve(); return; }
 
-      window.speechSynthesis.cancel();
+      // If already speaking, cancel and wait for it to fully stop
+      if (speakingRef.current) {
+        window.speechSynthesis.cancel();
+        speakingRef.current = false;
+      }
 
-      setTimeout(() => {
+      // Wait for cancel to fully settle before starting new utterance
+      const startSpeaking = () => {
         const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate   = 0.9;
+        utterance.rate   = 0.88;  // slightly slower = clearer
         utterance.pitch  = 1.0;
         utterance.volume = 1.0;
         utterance.lang   = "en-US";
@@ -38,30 +44,42 @@ export function useSpeech() {
         const done = () => {
           if (resolved) return;
           resolved = true;
-          clearTimeout(timeout);
+          speakingRef.current = false;
+          clearTimeout(safetyTimeout);
           setIsSpeaking(false);
           resolve();
         };
 
-        // Fallback timeout — estimate ~100ms per word, min 3s, max 25s
-        const wordCount = text.split(" ").length;
-        const ms = Math.min(Math.max(wordCount * 100 + 1000, 3000), 25000);
-        const timeout = setTimeout(() => {
+        // Safety timeout based on word count — never get stuck
+        const words = text.trim().split(/\s+/).length;
+        const safetyMs = Math.max(words * 400 + 2000, 4000); // 400ms/word + 2s buffer
+        const safetyTimeout = setTimeout(() => {
           window.speechSynthesis.cancel();
           done();
-        }, ms);
+        }, safetyMs);
 
-        utterance.onstart = () => setIsSpeaking(true);
+        utterance.onstart = () => {
+          speakingRef.current = true;
+          setIsSpeaking(true);
+        };
         utterance.onend   = done;
-        utterance.onerror = done; // never block on error
+        utterance.onerror = (e) => {
+          // "interrupted" means we cancelled it ourselves — not an error
+          if (e.error !== "interrupted") console.warn("[TTS] error:", e.error);
+          done();
+        };
 
         window.speechSynthesis.speak(utterance);
-      }, 150);
+      };
+
+      // Give browser 200ms to fully process the cancel before new speak
+      setTimeout(startSpeaking, 200);
     });
   }, []);
 
   const cancelSpeech = useCallback(() => {
     window.speechSynthesis?.cancel();
+    speakingRef.current = false;
     setIsSpeaking(false);
   }, []);
 
