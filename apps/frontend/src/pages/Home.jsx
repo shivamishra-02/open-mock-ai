@@ -219,6 +219,9 @@ export default function Home() {
       <p className="text-white/20 text-xs mt-8">
         Your resume is processed in-memory · Never stored
       </p>
+      <div className="mt-4 flex items-center gap-2 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs px-4 py-2.5 rounded-xl max-w-md text-center">
+        🎙️ For best experience with AI voice, use <strong className="mx-1">Microsoft Edge</strong> or <strong className="mx-1">Safari</strong>. Chrome may mute AI speech.
+      </div>
       <Footer />
     </div>
   );
