@@ -51,6 +51,13 @@ export default function Setup() {
   }
 
   const handleStart = () => {
+    // Unlock Chrome audio context on user gesture
+    if (window.speechSynthesis) {
+      const unlock = new SpeechSynthesisUtterance("");
+      unlock.volume = 0;
+      window.speechSynthesis.speak(unlock);
+      setTimeout(() => window.speechSynthesis.cancel(), 100);
+    }
     sessionStorage.setItem("duration", selected);
     navigate("/interview");
   };
