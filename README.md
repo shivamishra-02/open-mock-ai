@@ -4,7 +4,7 @@
 
 ### Your Personal AI Interviewer — Speak. Answer. Improve.
 
-[![Live Demo](https://img.shields.io/badge/🚀_Live_Demo-Click_Here-4f6ef7?style=for-the-badge)](YOUR_LIVE_LINK_HERE)
+[![Live Demo](https://img.shields.io/badge/🚀_Live_Demo-Click_Here-4f6ef7?style=for-the-badge)](https://open-mock-ai.vercel.app/)
 [![License](https://img.shields.io/badge/License-MIT-emerald?style=for-the-badge)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=for-the-badge&logo=nodedotjs)](https://nodejs.org)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react)](https://react.dev)
@@ -23,28 +23,26 @@
 
 ## 📸 Screenshots
 
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <img src="img1.png" alt="Home Page" width="100%" style="border-radius:12px"/>
-      <br/><b>🏠 Home — Resume Upload</b>
-    </td>
-    <td align="center" width="50%">
-      <img src="img2.png" alt="Interview Setup" width="100%" style="border-radius:12px"/>
-      <br/><b>⚙️ Setup — Choose Duration</b>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="img3.png" alt="Live Interview" width="100%" style="border-radius:12px"/>
-      <br/><b>🎙️ Live Interview — Voice Mode</b>
-    </td>
-    <td align="center" width="50%">
-      <img src="img4.png" alt="Feedback Report" width="100%" style="border-radius:12px"/>
-      <br/><b>📊 Report — Performance Feedback</b>
-    </td>
-  </tr>
-</table>
+<div align="center">
+  <img src="img1.png" alt="Home Page" width="80%"/>
+  <br/><br/>
+  <b>🏠 Home — Resume Upload</b>
+  <br/><br/><br/>
+
+  <img src="img2.png" alt="Interview Setup" width="80%"/>
+  <br/><br/>
+  <b>⚙️ Setup — Choose Duration</b>
+  <br/><br/><br/>
+
+  <img src="img3.png" alt="Live Interview" width="80%"/>
+  <br/><br/>
+  <b>🎙️ Live Interview — Voice Mode</b>
+  <br/><br/><br/>
+
+  <img src="img4.png" alt="Feedback Report" width="80%"/>
+  <br/><br/>
+  <b>📊 Report — Performance Feedback</b>
+</div>
 
 ---
 
@@ -142,7 +140,6 @@ npm install
 ### 3. Set up environment variables
 
 ```bash
-# Create the backend .env file
 cp apps/backend/.env.example apps/backend/.env
 ```
 
@@ -201,9 +198,9 @@ npm run dev
 
 ## 🌐 Deployment
 
-This project is configured for **one-click deployment on Vercel**.
+This project is live at **[open-mock-ai.vercel.app](https://open-mock-ai.vercel.app/)**
 
-> 📖 Full step-by-step deployment guide coming soon — will be updated when the live link is added.
+Deployed on Vercel with serverless backend functions.
 
 ---
 
