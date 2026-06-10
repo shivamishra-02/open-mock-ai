@@ -3,5 +3,10 @@
   "outputDirectory": "dist",
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/apps/backend/api/index.js" }
-  ]
+  ],
+  "functions": {
+    "apps/backend/api/index.js": {
+      "maxDuration": 30
+    }
+  }
 }
