@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "outputDirectory": "apps/frontend/dist",
+  "outputDirectory": "dist",
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/apps/backend/api/index.js" }
   ]
