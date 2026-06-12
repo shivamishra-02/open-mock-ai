@@ -248,6 +248,7 @@ npm run dev
           │  Experience Match               │
           │  Final Score + Verdict          │
           └─────────────────────────────────┘
+---
 
 ## 📡 API Endpoints
 
